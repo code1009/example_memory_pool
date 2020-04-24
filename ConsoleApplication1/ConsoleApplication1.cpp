@@ -413,12 +413,19 @@ message* typed_message_pool<T>::allocate(void)
 	T*    object;
 
 
+	EnterCriticalSection(&_mutex);
+
+
 	object = NULL;
 	memory = _allocator.allocate();
 	if (memory)
 	{
 		object = new (memory) T ();
 	}
+
+
+	LeaveCriticalSection(&_mutex);  
+
 
 	return object;
 }
@@ -430,6 +437,9 @@ void typed_message_pool<T>::deallocate(message* m)
 	T*    object;
 
 
+	EnterCriticalSection(&_mutex);
+
+
 	object = static_cast<T*>(m);
 	memory = object;
 
@@ -439,6 +449,9 @@ void typed_message_pool<T>::deallocate(message* m)
 	}
 
 	_allocator.deallocate(memory);
+
+
+	LeaveCriticalSection(&_mutex);  
 }
 
 
