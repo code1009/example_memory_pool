@@ -13,8 +13,180 @@
 
 
 /////////////////////////////////////////////////////////////////////////////
+//
+// Structure: simple_segregated_storage_link_t
+//
+/////////////////////////////////////////////////////////////////////////////
 //===========================================================================
-#define PROVIDER_COUNT 1
+struct _simple_segregated_storage_link_t
+{
+	struct _simple_segregated_storage_link_t* _next;
+};
+
+typedef struct _simple_segregated_storage_link_t simple_segregated_storage_link_t;
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Class: simple_segregated_storage
+//
+/////////////////////////////////////////////////////////////////////////////
+//===========================================================================
+class simple_segregated_storage
+{
+public:
+	typedef unsigned long int size_t;
+	typedef unsigned char     byte_t;
+	
+public:
+	byte_t* _memory_pointer;
+	size_t  _memory_size   ;
+	size_t  _align_size    ;
+
+	size_t _storage_size;
+
+	simple_segregated_storage_link_t* _tail;
+
+public:
+	simple_segregated_storage_link_t* _head;
+
+public:
+	simple_segregated_storage();
+
+public:
+	bool create (void* memory_pointer, size_t memory_size, size_t storage_size, size_t align_size = sizeof(void*));
+
+public:
+	void* allocate   (void);
+	void  deallocate (void* pointer);
+};
+
+//===========================================================================
+simple_segregated_storage::simple_segregated_storage():
+	_memory_pointer(0),
+	_memory_size   (0),
+	_align_size    (0),
+	_storage_size  (0),
+	_tail          (0),
+
+	_head (0)
+{
+}
+
+//===========================================================================
+bool simple_segregated_storage::create (void* memory_pointer, size_t memory_size, size_t storage_size, size_t align_size)
+{
+	if ( 0==memory_pointer )
+	{
+		return false;
+	}
+	if ( 0==memory_size )
+	{
+		return false;
+	}
+	if ( 0==align_size )
+	{
+		return false;
+	}
+	if ( 0!=(align_size%sizeof(void*)) )
+	{
+		return false;
+	}
+	if ( 0!=((reinterpret_cast< unsigned long long int >( memory_pointer )) % align_size) )
+	{
+		return false;
+	}
+
+
+	if ( storage_size < sizeof(simple_segregated_storage_link_t) )
+	{
+		storage_size = sizeof(simple_segregated_storage_link_t);
+	}
+	if ( storage_size%align_size )
+	{
+		storage_size = align_size*( storage_size/align_size+1 );
+	}
+	if ( storage_size > memory_size )
+	{
+		return false;
+	}
+	
+
+	byte_t*                           pointer;
+	simple_segregated_storage_link_t* head   ;
+	simple_segregated_storage_link_t* link   ;
+	size_t                            i      ;
+	size_t                            count  ;
+
+	pointer = reinterpret_cast< byte_t*                           >( memory_pointer );
+	head    = reinterpret_cast< simple_segregated_storage_link_t* >( memory_pointer );
+	count   = memory_size / storage_size;
+
+	link = head;
+	for( i=1; i<count; i++ )
+	{
+		link->_next = reinterpret_cast< simple_segregated_storage_link_t* >( pointer + i*storage_size );
+		link        = link->_next;
+	}
+	link->_next = 0; // null-pointer
+
+	_head = head;
+
+
+	_storage_size = storage_size;
+
+	_tail = link;
+
+	_memory_pointer = reinterpret_cast < byte_t* > ( memory_pointer );
+	_memory_size    = memory_size;
+	_align_size     = align_size;
+
+	return true;
+}
+
+void* simple_segregated_storage::allocate (void)
+{
+	if ( !_head )
+	{
+		return 0;
+	}
+
+	if ( !_head->_next )
+	{
+		return 0;
+	}
+
+	simple_segregated_storage_link_t* link;
+		
+	link  = _head;
+	_head = _head->_next;
+		
+	return reinterpret_cast< void* >(link);
+}
+
+void simple_segregated_storage::deallocate (void* pointer)
+{
+	if ( !pointer )
+	{
+		return;
+	}
+
+	simple_segregated_storage_link_t* link;
+
+	link  = _head;
+
+	_head = reinterpret_cast< simple_segregated_storage_link_t* >( pointer );
+	_head->_next = link;
+}
+
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//===========================================================================
+#define PROVIDER_COUNT 2
 
 
 
@@ -67,7 +239,7 @@ message_type_t;
 class message
 {
 public:
-	int type;
+	const int type;
 
 public:
 	int provider;
@@ -75,6 +247,11 @@ public:
 
 public:
 	message();
+
+protected:
+	explicit message(int t);
+
+public:
 	virtual ~message();
 };
 
@@ -155,7 +332,17 @@ class typed_message_pool
 {
 public:
 	CRITICAL_SECTION _mutex;
+
 	int _max_count;
+	int _count;
+
+	unsigned char*    _memory_pointer;
+	unsigned long int _memory_size   ;
+
+	simple_segregated_storage _allocator;
+
+public:
+	typed_message_pool();
 
 public:
 	int  create  (int max_count);
@@ -168,11 +355,39 @@ public:
 
 //===========================================================================
 template<class T>
+typed_message_pool<T>::typed_message_pool()
+{
+	_memory_pointer = NULL;
+}
+
+template<class T>
 int typed_message_pool<T>::create(int max_count)
 {
-	_max_count = max_count;
+	unsigned long int object_size;
+	unsigned long int object_count;
+
 
 	InitializeCriticalSection(&_mutex);
+
+	_max_count = max_count;
+	_count     = 0;
+
+	object_size  = sizeof(T);
+	object_count = max_count+1u;
+
+	_memory_size    = object_size*object_count;
+	_memory_pointer = new (std::nothrow) unsigned char[_memory_size];
+	
+
+	if (NULL==_memory_pointer)
+	{
+		return -1;
+	}
+
+	if (false==_allocator.create(_memory_pointer, _memory_size, object_size))
+	{
+		return -1;
+	}
 
 
 	return 0;
@@ -181,6 +396,12 @@ int typed_message_pool<T>::create(int max_count)
 template<class T>
 void typed_message_pool<T>::destroy(void)
 {
+	if (_memory_pointer)
+	{
+		delete[] _memory_pointer;
+	}
+	_memory_pointer = NULL;
+
 
 	DeleteCriticalSection(&_mutex);
 }
@@ -188,13 +409,36 @@ void typed_message_pool<T>::destroy(void)
 template<class T>
 message* typed_message_pool<T>::allocate(void)
 {
-	return NULL;
+	void* memory;
+	T*    object;
+
+
+	object = NULL;
+	memory = _allocator.allocate();
+	if (memory)
+	{
+		object = new (memory) T ();
+	}
+
+	return object;
 }
 
 template<class T>
 void typed_message_pool<T>::deallocate(message* m)
 {
+	void* memory;
+	T*    object;
 
+
+	object = static_cast<T*>(m);
+	memory = object;
+
+	if (object)
+	{
+		object->~T();
+	}
+
+	_allocator.deallocate(memory);
 }
 
 
@@ -297,6 +541,8 @@ public:
 
 public:
 	void wait_for_thread (void);
+	void resume_thread (void);
+	void suspend_thread (void);
 };
 
 
@@ -380,7 +626,7 @@ int application::create (void)
 		_provider[i]._application = this;
 		_provider[i]._id = i;
 
-		_provider_thread[i].periodic_time = 800 + 10*i;
+		_provider_thread[i].periodic_time = time_base/2u;
 		_provider_thread[i].handle = CreateThread(NULL, 0u, provider_thread_function, &_provider[i], CREATE_SUSPENDED, &_provider_thread[i].id);
 		if (NULL==_provider_thread[i].handle)
 		{
@@ -401,12 +647,7 @@ int application::create (void)
 
 
 	//-----------------------------------------------------------------------
-	ResumeThread(_consumer_thread.handle);
-
-	for (i=0; i<PROVIDER_COUNT; i++)
-	{
-		ResumeThread(_provider_thread[i].handle);
-	}
+	resume_thread();
 
 	return 0;
 
@@ -455,6 +696,10 @@ void application::run (void)
 	
 	int ch;
 
+	bool suspend;
+
+
+	suspend = false;
 
 	loop=1;
 	while (loop)
@@ -466,9 +711,38 @@ void application::run (void)
 			loop = 0;
 			break;
 
+		case 'p':
+			if (false==suspend)
+			{
+				suspend_thread();
+				suspend = true;
+			}
+			break;
+
+		case 'r':
+			if (true==suspend)
+			{
+				resume_thread();
+				suspend = false;
+			}
+			break;
+
+		case '1':
+			SuspendThread(_consumer_thread.handle);
+			break;
+
+		case '2':
+			ResumeThread(_consumer_thread.handle);
+			break;
+
 		default:
 			break;
 		}
+	}
+
+	if (true==suspend)
+	{
+		resume_thread();
 	}
 
 	SetEvent(_exit_event);
@@ -519,6 +793,31 @@ void application::wait_for_thread (void)
 	}
 }
 
+void application::resume_thread (void)
+{
+	int i;
+
+
+	ResumeThread(_consumer_thread.handle);
+
+	for (i=0; i<PROVIDER_COUNT; i++)
+	{
+		ResumeThread(_provider_thread[i].handle);
+	}
+}
+
+void application::suspend_thread (void)
+{
+	int i;
+
+
+	SuspendThread(_consumer_thread.handle);
+
+	for (i=0; i<PROVIDER_COUNT; i++)
+	{
+		SuspendThread(_provider_thread[i].handle);
+	}
+}
 
 
 
@@ -780,6 +1079,56 @@ int message_queue::pop(message*& m, DWORD timeout)
 
 /////////////////////////////////////////////////////////////////////////////
 //===========================================================================
+message::message() :
+	type(MESSAGE_TYPE_UNKNOWN)
+{
+}
+
+message::message(int t) :
+	type(t)
+{
+}
+
+message::~message()
+{
+}
+
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//===========================================================================
+code_message::code_message():
+	message(MESSAGE_TYPE_CODE)
+{
+}
+
+code_message::~code_message()
+{
+}
+
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//===========================================================================
+packet_message::packet_message():
+	message(MESSAGE_TYPE_PACKET)
+{
+}
+
+packet_message::~packet_message()
+{
+}
+
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//===========================================================================
 provider::provider():
 	_application(NULL),
 	_id(-1),
@@ -809,6 +1158,13 @@ void provider::run (void)
 
 		case WAIT_TIMEOUT:
 			send_message();
+			if (0!=(_id%2))
+			{
+				send_message();
+				send_message();
+				send_message();
+			}
+
 			break;
 
 		case WAIT_ABANDONED_0:
@@ -836,7 +1192,7 @@ void provider::send_message (void)
 	message* m;
 
 
-	if (0==(_sequence%2))
+	if (0==(_id%2))
 	{
 		m = build_code_message();
 	}
@@ -973,12 +1329,14 @@ void consumer::recv_message (void)
 	rc = _application->_message_queue.read(m);
 	ReleaseSemaphore(_application->_message_queue._w_counter, 1, NULL);
 
-	printf ("consumer::recv_message(): queue read(%d) = %d \n", rc, (int)m);
+	printf ("consumer::recv_message(): queue read(%d) = 0x%08x ", rc, (int)m);
 
 	if (0<=rc)
 	{
 		process_message(m);
 	}
+
+	printf("\n");
 }
 
 void consumer::process_message (message* m)
@@ -1000,7 +1358,7 @@ void consumer::process_code_message (code_message* m)
 
 	v = m->code;
 
-	printf ("[consumer] (%d,%d) code %d \n", m->provider, m->sequence, v);
+	printf ("[consumer] (%d,%04d) %d code", m->provider, m->sequence, v);
 }
 
 void consumer::process_packet_message (packet_message* m)
@@ -1010,7 +1368,7 @@ void consumer::process_packet_message (packet_message* m)
 
 	memcpy(&v, m->packet_buffer, sizeof(int));
 
-	printf ("[consumer] (%d,%d) packet %d \n", m->provider, m->sequence, v);
+	printf ("[consumer] (%d,%04d) %d packet", m->provider, m->sequence, v);
 }
 
 
