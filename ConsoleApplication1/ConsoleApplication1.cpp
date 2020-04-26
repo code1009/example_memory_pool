@@ -152,10 +152,12 @@ void* simple_segregated_storage::allocate (void)
 		return 0;
 	}
 
+/*
 	if ( !_head->_next )
 	{
 		return 0;
 	}
+*/
 
 	simple_segregated_storage_link_t* link;
 		
@@ -280,7 +282,7 @@ public:
 class packet_message : public message
 {
 public:
-	unsigned char packet_buffer[1024];
+	unsigned char packet_buffer[256-16];
 
 public:
 	packet_message();
@@ -373,7 +375,8 @@ int typed_message_pool<T>::create(int max_count)
 	_count     = 0;
 
 	object_size  = sizeof(T);
-	object_count = max_count+1u;
+//	object_count = max_count+1u;
+	object_count = max_count;
 
 	_memory_size    = object_size*object_count;
 	_memory_pointer = new (std::nothrow) unsigned char[_memory_size];
